@@ -11,6 +11,7 @@ from Sons.sons import efeitos_sonoros
 from Personagem.Volt import Volt
 from Mapa.mapa_fase1 import Map
 from Inimigo.InimigoPatrulha import InimigoPatrulha
+from Inimigo.InimigoAtirador import InimigoAtirador
 import os
 
 
@@ -37,7 +38,11 @@ class Game:
             self.map = None
 
         self.volt_personagem = Volt(910, 500)
+
+        # Inicialização dos Inimigos
         self.inimigos = []
+
+        # 1. Inimigo Patrulha (Posição Original)
         inimigo1 = InimigoPatrulha(
             x=1200,
             y=700,
@@ -46,12 +51,26 @@ class Game:
             velocidade=150
         )
         self.inimigos.append(inimigo1)
+
+        # 2. Inimigo Atirador (Posicionamento Corrigido)
+        atirador1 = InimigoAtirador(
+            x=850,
+            y=265,
+            limite_esquerdo=800,
+            limite_direito=900
+        )
+        self.inimigos.append(atirador1)
+
+        self.projeteis_inimigos_ativos = []
+
         self.offset_x = 0
         self.offset_y = 0
 
         self.pausado = False
         self.menu_pause = MenuPause(self.window, self.sons)
         self.p_pressionado_anteriormente = False
+
+        self.soco_acertou = False
 
     def _handle_pausa_input(self):
         """Gerencia o input da tecla 'P' para alternar o estado de pausa."""
@@ -105,30 +124,56 @@ class Game:
                 exit()
 
     def update(self, dt):
+
+        # Lógica de reset do flag de hit do soco
+        if not self.volt_personagem.atacando:
+            self.soco_acertou = False
+
         self.volt_personagem.update(self.map, self.keyboard, dt)
 
-        # Dados do Volt para o Inimigo
         volt_rect = self.volt_personagem.rect
         volt_invencivel = self.volt_personagem.invencivel
 
-        # Atualiza e processa o dano de TODOS os inimigos
+        # Atualiza inimigos e processa dano/projéteis
         for inimigo in self.inimigos:
-            dano_info = inimigo.update(dt, volt_rect, volt_invencivel)
+            if inimigo.morto:
+                if hasattr(inimigo, '_update_projeteis'):
+                    inimigo._update_projeteis(dt)
+                continue
 
-            if dano_info and not volt_invencivel:
+            resultado_update = inimigo.update(dt, volt_rect, volt_invencivel)
+
+            # 1. Coleta projéteis do InimigoAtirador
+            if isinstance(inimigo, InimigoAtirador):
+                self.projeteis_inimigos_ativos.extend(resultado_update)
+
+            # 2. Processa o dano do ataque corpo-a-corpo (InimigoPatrulha)
+            if isinstance(inimigo, InimigoPatrulha) and resultado_update and resultado_update[
+                "tipo"] == "dano" and not volt_invencivel:
+                dano_info = resultado_update
                 direcao_knockback = dano_info["direcao"] * -1
 
                 self.volt_personagem.tomar_dano(dano_info["dano"], direcao_knockback)
+                self.volt_personagem.invencivel = True
+                self.volt_personagem.tempo_invencivel = pygame.time.get_ticks()
+
+        # LÓGICA DE DANO DE MAPA/ARMADILHA
+        self.volt_personagem.verifica_dano(self.map)
+
+        # 3. COLISÃO PROJÉTEIS INIMIGOS vs VOLT (CORREÇÃO HIT KILL)
+        projeteis_a_remover_por_acerto = []
+        for projetil in self.projeteis_inimigos_ativos:
+            if projetil.rect.colliderect(volt_rect) and not volt_invencivel:
+                self.volt_personagem.tomar_dano(projetil.DANO, projetil.direcao)
 
                 self.volt_personagem.invencivel = True
                 self.volt_personagem.tempo_invencivel = pygame.time.get_ticks()
 
-                # A verificação principal de gameover agora está no final
+                # 🟢 CRÍTICO: MARCA O PROJÉTIL PARA REMOÇÃO E O DESATIVA IMEDIATAMENTE
+                projeteis_a_remover_por_acerto.append(projetil)
+                projetil.ativo = False
 
-        # 🟢 LÓGICA DE DANO DE MAPA/ARMADILHA
-        self.volt_personagem.verifica_dano(self.map)
-
-        # 🟢 VERIFICAÇÃO FINAL DE GAME OVER APÓS TODOS OS DANOS
+                # 4. VERIFICAÇÃO FINAL DE GAME OVER
         if self.volt_personagem.vida_atual <= 0:
             print("Game Over!")
             return "gameover"
@@ -137,7 +182,9 @@ class Game:
         inimigos_a_remover = []
         raios_a_remover = []
 
-        # 1. Colisão RAIOS vs INIMIGOS (e SOCO) - LÓGICA DE MORTE
+        # 5. Colisão RAIOS e SOCO do Volt vs Inimigos - LÓGICA DE MORTE
+
+        # Colisão de RAIOS
         for poder in self.volt_personagem.poderes:
             rect_poder = pygame.Rect(
                 poder.sprite.x,
@@ -146,22 +193,35 @@ class Game:
                 poder.sprite.height
             )
             for inimigo in self.inimigos:
-                if rect_poder.colliderect(inimigo.rect):
-                    inimigos_a_remover.append(inimigo)
+                if not inimigo.morto and rect_poder.colliderect(inimigo.rect):
+                    morreu = inimigo.tomar_dano(InimigoPatrulha.DANO_SOCO_VOLT)
+
+                    if morreu:
+                        self.sons.som_Poder()
+                        inimigos_a_remover.append(inimigo)
+
                     raios_a_remover.append(poder)
-                    self.sons.som_Poder()
                     break
 
-        if self.volt_personagem.atacando and (
+        # Colisão de SOCO (Dano único por animação)
+        if self.volt_personagem.atacando and not self.soco_acertou and (
                 self.volt_personagem.estado == "soco_direita" or self.volt_personagem.estado == "soco_esquerda"):
+
             if self.volt_personagem.frame_atual == 2:
                 area_soco = self.volt_personagem.dano_soco()
-                for inimigo in self.inimigos:
-                    if area_soco.colliderect(inimigo.rect):
-                        inimigos_a_remover.append(inimigo)
-                        self.sons.som_Poder()
 
-        # 4. REMOÇÃO DOS MORTOS
+                for inimigo in self.inimigos:
+                    if not inimigo.morto and area_soco.colliderect(inimigo.rect):
+                        morreu = inimigo.tomar_dano(InimigoPatrulha.DANO_SOCO_VOLT)
+
+                        if morreu:
+                            self.sons.som_Poder()
+                            inimigos_a_remover.append(inimigo)
+
+                        self.soco_acertou = True
+                        break
+
+        # 6. REMOÇÃO DOS MORTOS e LIMPEZA
         for inimigo_morto in inimigos_a_remover:
             if inimigo_morto in self.inimigos:
                 self.inimigos.remove(inimigo_morto)
@@ -169,7 +229,11 @@ class Game:
             if raio_removido in self.volt_personagem.poderes:
                 self.volt_personagem.poderes.remove(raio_removido)
 
-        # calcula offsets de câmera
+        # LIMPEZA DOS PROJÉTEIS INIMIGOS (Remove os que acertaram ou saíram da tela)
+        self.projeteis_inimigos_ativos = [p for p in self.projeteis_inimigos_ativos if
+                                          p not in projeteis_a_remover_por_acerto and p.ativo]
+
+        # 7. calcula offsets de câmera
         tela_w = self.window.width
         tela_h = self.window.height
         ideal_offset_x = self.volt_personagem.rect.centerx - (tela_w / 2)
@@ -179,7 +243,7 @@ class Game:
         self.offset_y = max(0, ideal_offset_y)
         self.offset_y = min(self.offset_y, max(0, self.map.height - tela_h))
 
-        return None  # Retorna None se o jogo continuar
+        return None
 
     def draw(self):
 
@@ -190,6 +254,10 @@ class Game:
 
             for inimigo in self.inimigos:
                 inimigo.draw(self.screen, int(self.offset_x), int(self.offset_y))
+
+            # Desenha projéteis inimigos ativos
+            for projetil in self.projeteis_inimigos_ativos:
+                projetil.draw(self.screen, self.offset_x, self.offset_y)
 
             self.volt_personagem.draw(self.screen, int(self.offset_x), int(self.offset_y))
             self.volt_personagem.draw_vida(self.screen)

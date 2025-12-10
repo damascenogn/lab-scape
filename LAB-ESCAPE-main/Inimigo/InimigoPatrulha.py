@@ -5,15 +5,21 @@ from PPlay.collision import Collision
 
 
 class InimigoPatrulha:
-    # 🟢 DEFINIÇÕES DE COMBATE E SPRITES
+    # DEFINIÇÕES DE COMBATE E SPRITES
     SPRITE_WIDTH = 128
     SPRITE_HEIGHT = 128
     VELOCIDADE_ANIMACAO = 0.1
-    ALCANCE_ATAQUE = 100  # Distância máxima para iniciar o soco (em pixels)
-    JANELA_DANO_INICIO = 3  # Frame onde o dano começa
-    JANELA_DANO_FIM = 4  # Frame onde o dano termina
-    FRAMES_ATAQUE = 6  # Total de frames da animação de soco
-    DANO_Soco = 20  # Dano base do inimigo
+    ALCANCE_ATAQUE = 100
+    JANELA_DANO_INICIO = 3
+    JANELA_DANO_FIM = 4
+    FRAMES_ATAQUE = 6
+    DANO_Soco = 20
+
+    # 🟢 NOVO: Dano que o soco do Volt causa (assumindo que o soco do Volt causa 50 de dano)
+    DANO_SOCO_VOLT = 50
+
+    # 🟢 VIDA DO INIMIGO (Para morrer com 2 socos, vida deve ser 100)
+    VIDA_TOTAL = 100
 
     def __init__(self, x, y, limite_esquerdo, limite_direito, velocidade):
 
@@ -22,11 +28,17 @@ class InimigoPatrulha:
         self.limite_direito = limite_direito
         self.velocidade_movimento = velocidade
 
+        # 🟢 VIDA
+        self.vida_total = self.VIDA_TOTAL
+        self.vida_atual = self.VIDA_TOTAL
+        self.morto = False  # Flag de estado
+        # ... (Restante do seu código original) ...
+
         # Estado inicial
         self.direcao = 1
-        self.estado = "patrulha"  # 🟢 NOVO ESTADO BASE
+        self.estado = "patrulha"
         self.tempo_animacao = 0.0
-        self.atacando = False  # Flag para travar o movimento durante o ataque
+        self.atacando = False
 
         # 2. Carregamento das Spritesheets
         CAMINHO_BASE = os.path.join("Assets", "Images", "Inimigos", "InimigoPatrulha")
@@ -39,7 +51,7 @@ class InimigoPatrulha:
             self.animacao_andar_esquerda = self._carregar_spritesheet(os.path.join(CAMINHO_BASE, "Esquerda.png"),
                                                                       num_frames=6)
 
-            # 🟢 ANIMAÇÕES DE ATAQUE (6 frames)
+            # ANIMAÇÕES DE ATAQUE (6 frames)
             self.animacao_soco_direita = self._carregar_spritesheet(os.path.join(CAMINHO_BASE, "Direitasoco.png"),
                                                                     num_frames=self.FRAMES_ATAQUE)
             self.animacao_soco_esquerda = self._carregar_spritesheet(os.path.join(CAMINHO_BASE, "Esquerdasoco.png"),
@@ -70,26 +82,36 @@ class InimigoPatrulha:
             frames.append(frame_surface)
         return frames
 
-    # 🟢 NOVO: Geração do Retângulo de Acerto (Hitbox)
+    # 🟢 NOVO: Método para tomar dano
+    def tomar_dano(self, dano):
+        if not self.morto:
+            self.vida_atual -= dano
+            if self.vida_atual <= 0:
+                self.vida_atual = 0
+                self.morto = True
+                return True  # Inimigo morreu
+        return False  # Inimigo ainda está vivo
+
     def gerar_hitbox_soco(self):
         # A hitbox é um retângulo que se projeta do inimigo durante o ataque.
         if self.estado != "atacando" or self.frame_atual < self.JANELA_DANO_INICIO or self.frame_atual > self.JANELA_DANO_FIM:
-            return None  # Nenhuma hitbox ativa
+            return None
 
-        # Ajuste a posição e tamanho da hitbox
         hitbox_width = 40
         hitbox_height = 80
-        hitbox_y = self.rect.y + 30  # Ajuste vertical
+        hitbox_y = self.rect.y + 30
 
-        if self.direcao == 1:  # Direita
-            hitbox_x = self.rect.right - 20  # Sair do corpo do inimigo
-        else:  # Esquerda
-            hitbox_x = self.rect.left - hitbox_width + 20  # Sair do corpo do inimigo
+        if self.direcao == 1:
+            hitbox_x = self.rect.right - 20
+        else:
+            hitbox_x = self.rect.left - hitbox_width + 20
 
         return pygame.Rect(hitbox_x, hitbox_y, hitbox_width, hitbox_height)
 
-    # 🟢 UPDATE RECEBE POSIÇÃO DO VOLT E O ESTADO DE JOGO (para aplicar dano)
     def update(self, dt, volt_rect, volt_invencivel):
+
+        if self.morto:
+            return None  # Não atualiza se estiver morto
 
         self.tempo_animacao += dt
 
@@ -102,7 +124,6 @@ class InimigoPatrulha:
             self.frame_atual = 0
             self.tempo_animacao = 0.0
 
-            # Trava a direção do soco para o jogador
             if volt_rect.centerx > self.rect.centerx:
                 self.direcao = 1
             else:
@@ -124,7 +145,6 @@ class InimigoPatrulha:
         # 3. ATUALIZA ANIMAÇÃO E ESTADO DO ATAQUE
         if self.estado == "atacando":
 
-            # Animação
             if self.direcao == 1:
                 self.sprites_atuais = self.animacao_soco_direita
             else:
@@ -137,7 +157,7 @@ class InimigoPatrulha:
                 self.frame_atual = 0
                 self.tempo_animacao = 0.0
 
-            # 🟢 LÓGICA DE DANO: Colisão com o jogador
+            # LÓGICA DE DANO: Colisão com o jogador
             hitbox = self.gerar_hitbox_soco()
             if hitbox and volt_rect.colliderect(hitbox) and not volt_invencivel:
                 # Retorna o dano para ser processado no main.py
@@ -156,15 +176,17 @@ class InimigoPatrulha:
             self.tempo_animacao = 0.0
 
         self.image = self.sprites_atuais[self.frame_atual]
-        return None  # Retorna None se não houver dano
+        return None  # Retorna None se não houver dano ou se estiver morto
 
     def draw(self, screen, offset_x, offset_y):
+        if self.morto: return
         screen_x = self.rect.x - offset_x
         screen_y = self.rect.y - offset_y
 
+        # Desenha a imagem
         screen.blit(self.image, (screen_x, screen_y))
 
-        # 💡 DEBUG: Desenha a hitbox ativa
+        # DEBUG: Desenha a hitbox ativa
         hitbox = self.gerar_hitbox_soco()
         if hitbox:
             hitbox_screen = hitbox.move(-offset_x, -offset_y)
