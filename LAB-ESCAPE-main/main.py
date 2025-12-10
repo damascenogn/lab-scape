@@ -3,6 +3,7 @@ import pytmx
 from Menu.menu import MenuPrincipal
 from Menu.menu_controles import MenuControles
 from Menu.menu_pause import MenuPause
+from Menu.menu_gameover import MenuGameOver
 from PPlay.window import Window
 from PPlay.keyboard import Keyboard
 from sys import exit
@@ -27,7 +28,7 @@ class Game:
         self.clock = pygame.time.Clock()
         self.running = True
 
-        # 🟢 DEBUG E CARREGAMENTO DO MAPA
+        # DEBUG E CARREGAMENTO DO MAPA
         try:
             self.map = Map("Mapa/Fase-1.tmx")
             print("INFO: Mapa Fase-1.tmx carregado com sucesso.")
@@ -50,20 +51,18 @@ class Game:
 
         self.pausado = False
         self.menu_pause = MenuPause(self.window, self.sons)
-        # 🟢 NOVO: Flag para controlar o toggle da tecla 'P'
         self.p_pressionado_anteriormente = False
 
     def _handle_pausa_input(self):
         """Gerencia o input da tecla 'P' para alternar o estado de pausa."""
         tecla_p_agora = self.keyboard.key_pressed("P")
 
-        # 🟢 LÓGICA DE TOGGLE: Muda o estado se P foi pressionado agora, mas não no frame anterior
         if tecla_p_agora and not self.p_pressionado_anteriormente:
             self.pausado = not self.pausado
             if self.pausado:
-                self.sons.tocar_selecao()  # Som de pausa
+                self.sons.tocar_selecao()
             else:
-                self.sons.tocar_selecao_ok()  # Som de despausa
+                self.sons.tocar_selecao_ok()
 
         self.p_pressionado_anteriormente = tecla_p_agora
 
@@ -72,7 +71,6 @@ class Game:
             dt_ms = self.clock.tick(60)
             dt_segundos = dt_ms / 1000.0
 
-            # 🟢 CHAMA O NOVO GERENCIADOR DE INPUT PARA O TOGGLE
             self._handle_pausa_input()
 
             if self.pausado:
@@ -88,7 +86,12 @@ class Game:
 
             # --- Lógica normal do Jogo ---
             self.handle_events()
-            self.update(dt_segundos)
+
+            proximo_estado = self.update(dt_segundos)
+            if proximo_estado == "gameover":
+                self.running = False
+                return "gameover"
+
             self.draw()
             self.window.update()
 
@@ -101,32 +104,40 @@ class Game:
                 pygame.quit()
                 exit()
 
-    # 🟢 CÓDIGO RESTAURADO: UPDATE
     def update(self, dt):
         self.volt_personagem.update(self.map, self.keyboard, dt)
-        for inimigo in self.inimigos:
-            inimigo.update(dt)
 
+        # Dados do Volt para o Inimigo
+        volt_rect = self.volt_personagem.rect
+        volt_invencivel = self.volt_personagem.invencivel
+
+        # Atualiza e processa o dano de TODOS os inimigos
+        for inimigo in self.inimigos:
+            dano_info = inimigo.update(dt, volt_rect, volt_invencivel)
+
+            if dano_info and not volt_invencivel:
+                direcao_knockback = dano_info["direcao"] * -1
+
+                self.volt_personagem.tomar_dano(dano_info["dano"], direcao_knockback)
+
+                self.volt_personagem.invencivel = True
+                self.volt_personagem.tempo_invencivel = pygame.time.get_ticks()
+
+                # A verificação principal de gameover agora está no final
+
+        # 🟢 LÓGICA DE DANO DE MAPA/ARMADILHA
         self.volt_personagem.verifica_dano(self.map)
+
+        # 🟢 VERIFICAÇÃO FINAL DE GAME OVER APÓS TODOS OS DANOS
+        if self.volt_personagem.vida_atual <= 0:
+            print("Game Over!")
+            return "gameover"
+
         agora = pygame.time.get_ticks()
         inimigos_a_remover = []
         raios_a_remover = []
 
-        # 1. Colisão INIMIGO vs VOLT
-        for inimigo in self.inimigos:
-            if self.volt_personagem.rect.colliderect(inimigo.rect) and not self.volt_personagem.invencivel:
-                if self.volt_personagem.rect.centerx < inimigo.rect.centerx:
-                    direcao_knockback = -1
-                else:
-                    direcao_knockback = 1
-                self.volt_personagem.tomar_dano(10, direcao_knockback)
-                self.volt_personagem.invencivel = True
-                self.volt_personagem.tempo_invencivel = agora
-                if self.volt_personagem.vida_atual <= 0:
-                    print("Game Over!")
-                    self.running = False
-
-        # 2. Colisão RAIOS vs INIMIGOS (e SOCO)
+        # 1. Colisão RAIOS vs INIMIGOS (e SOCO) - LÓGICA DE MORTE
         for poder in self.volt_personagem.poderes:
             rect_poder = pygame.Rect(
                 poder.sprite.x,
@@ -138,7 +149,7 @@ class Game:
                 if rect_poder.colliderect(inimigo.rect):
                     inimigos_a_remover.append(inimigo)
                     raios_a_remover.append(poder)
-                    self.sons.som_MorteInimigo()
+                    self.sons.som_Poder()
                     break
 
         if self.volt_personagem.atacando and (
@@ -148,7 +159,7 @@ class Game:
                 for inimigo in self.inimigos:
                     if area_soco.colliderect(inimigo.rect):
                         inimigos_a_remover.append(inimigo)
-                        self.sons.som_MorteInimigo()
+                        self.sons.som_Poder()
 
         # 4. REMOÇÃO DOS MORTOS
         for inimigo_morto in inimigos_a_remover:
@@ -168,7 +179,8 @@ class Game:
         self.offset_y = max(0, ideal_offset_y)
         self.offset_y = min(self.offset_y, max(0, self.map.height - tela_h))
 
-    # 🟢 CÓDIGO RESTAURADO: DRAW
+        return None  # Retorna None se o jogo continuar
+
     def draw(self):
 
         self.screen.fill((0, 0, 0))
@@ -206,6 +218,10 @@ if __name__ == "__main__":
         elif estado_jogo == "jogo":
             game = Game(1080, 720, sons=sons_obj)
             estado_jogo = game.run()
+
+        elif estado_jogo == "gameover":
+            game_over_menu = MenuGameOver(window_obj, sons_menu=sons_obj)
+            estado_jogo = game_over_menu.run()
 
     pygame.quit()
     exit()

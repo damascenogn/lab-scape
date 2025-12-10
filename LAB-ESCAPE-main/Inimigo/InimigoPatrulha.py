@@ -5,10 +5,15 @@ from PPlay.collision import Collision
 
 
 class InimigoPatrulha:
-    # 🟢 DEFINIÇÕES FINAIS DA SPRITESHEET
+    # 🟢 DEFINIÇÕES DE COMBATE E SPRITES
     SPRITE_WIDTH = 128
     SPRITE_HEIGHT = 128
-    VELOCIDADE_ANIMACAO = 0.1  # Tempo em segundos para mudar de frame (10 frames/segundo)
+    VELOCIDADE_ANIMACAO = 0.1
+    ALCANCE_ATAQUE = 100  # Distância máxima para iniciar o soco (em pixels)
+    JANELA_DANO_INICIO = 3  # Frame onde o dano começa
+    JANELA_DANO_FIM = 4  # Frame onde o dano termina
+    FRAMES_ATAQUE = 6  # Total de frames da animação de soco
+    DANO_Soco = 20  # Dano base do inimigo
 
     def __init__(self, x, y, limite_esquerdo, limite_direito, velocidade):
 
@@ -18,110 +23,149 @@ class InimigoPatrulha:
         self.velocidade_movimento = velocidade
 
         # Estado inicial
-        self.direcao = 1  # 1: Direita, -1: Esquerda
-        self.estado = "andar_direita"
+        self.direcao = 1
+        self.estado = "patrulha"  # 🟢 NOVO ESTADO BASE
         self.tempo_animacao = 0.0
+        self.atacando = False  # Flag para travar o movimento durante o ataque
 
         # 2. Carregamento das Spritesheets
-        # NOTA: O caminho é Assets/Images/Inimigos/InimigoPatrulha/[Nome do Arquivo]
         CAMINHO_BASE = os.path.join("Assets", "Images", "Inimigos", "InimigoPatrulha")
 
         try:
-            # PARADO (512x128 -> 4 frames)
-            self.animacao_parado = self._carregar_spritesheet(
-                os.path.join(CAMINHO_BASE, "Parado.png"),
-                num_frames=4
-            )
+            # Animações de MOVIMENTO (4 e 6 frames)
+            self.animacao_parado = self._carregar_spritesheet(os.path.join(CAMINHO_BASE, "Parado.png"), num_frames=4)
+            self.animacao_andar_direita = self._carregar_spritesheet(os.path.join(CAMINHO_BASE, "Direita.png"),
+                                                                     num_frames=6)
+            self.animacao_andar_esquerda = self._carregar_spritesheet(os.path.join(CAMINHO_BASE, "Esquerda.png"),
+                                                                      num_frames=6)
 
-            # ANDAR DIREITA (768x128 -> 6 frames)
-            self.animacao_andar_direita = self._carregar_spritesheet(
-                os.path.join(CAMINHO_BASE, "Direita.png"),
-                num_frames=6
-            )
-
-            # ANDAR ESQUERDA (768x128 -> 6 frames)
-            self.animacao_andar_esquerda = self._carregar_spritesheet(
-                os.path.join(CAMINHO_BASE, "Esquerda.png"),
-                num_frames=6
-            )
+            # 🟢 ANIMAÇÕES DE ATAQUE (6 frames)
+            self.animacao_soco_direita = self._carregar_spritesheet(os.path.join(CAMINHO_BASE, "Direitasoco.png"),
+                                                                    num_frames=self.FRAMES_ATAQUE)
+            self.animacao_soco_esquerda = self._carregar_spritesheet(os.path.join(CAMINHO_BASE, "Esquerdasoco.png"),
+                                                                     num_frames=self.FRAMES_ATAQUE)
 
         except Exception as e:
-            print(
-                f"ERRO DE CARREGAMENTO DE SPRITES INIMIGO. Verifique se os arquivos (Parado.png, Direita.png, Esquerda.png) estão na pasta {CAMINHO_BASE}. Erro: {e}")
-            # Cria um sprite placeholder em caso de falha para evitar crash
+            print(f"ERRO DE CARREGAMENTO DE SPRITES INIMIGO: {e}")
             self.animacao_parado = [pygame.Surface((self.SPRITE_WIDTH, self.SPRITE_HEIGHT))]
             self.animacao_andar_direita = self.animacao_parado
             self.animacao_andar_esquerda = self.animacao_parado
+            self.animacao_soco_direita = self.animacao_parado
+            self.animacao_soco_esquerda = self.animacao_parado
 
         # 3. Inicialização do Sprite
         self.sprites_atuais = self.animacao_parado
         self.frame_atual = 0
         self.image = self.sprites_atuais[self.frame_atual]
 
-        # Cria o retângulo de colisão (Pygame Rect)
         self.rect = self.image.get_rect(x=x, y=y)
 
-        # Ajuste o Y inicial para posicionar corretamente, considerando a altura da tela
-        # self.rect.y -= (self.SPRITE_HEIGHT - 64) # Exemplo de ajuste se o y inicial era a base
-
     def _carregar_spritesheet(self, caminho_sheet, num_frames):
-        """
-        Carrega uma folha de sprites (sheets separadas) e a divide.
-        Assume que todos os frames estão na mesma linha (y=0).
-        """
         spritesheet = pygame.image.load(caminho_sheet).convert_alpha()
         frames = []
-
         for i in range(num_frames):
             frame_surface = pygame.Surface((self.SPRITE_WIDTH, self.SPRITE_HEIGHT), pygame.SRCALPHA)
-
-            # Define a área a ser copiada da folha: (x, y, largura, altura)
             area_crop = (i * self.SPRITE_WIDTH, 0, self.SPRITE_WIDTH, self.SPRITE_HEIGHT)
-
             frame_surface.blit(spritesheet, (0, 0), area_crop)
             frames.append(frame_surface)
-
         return frames
 
-    def update(self, dt):
+    # 🟢 NOVO: Geração do Retângulo de Acerto (Hitbox)
+    def gerar_hitbox_soco(self):
+        # A hitbox é um retângulo que se projeta do inimigo durante o ataque.
+        if self.estado != "atacando" or self.frame_atual < self.JANELA_DANO_INICIO or self.frame_atual > self.JANELA_DANO_FIM:
+            return None  # Nenhuma hitbox ativa
 
-        # 1. Movimento e Patrulha
-        movimento_x = self.velocidade_movimento * self.direcao * dt
-        self.rect.x += movimento_x
+        # Ajuste a posição e tamanho da hitbox
+        hitbox_width = 40
+        hitbox_height = 80
+        hitbox_y = self.rect.y + 30  # Ajuste vertical
 
-        # Verifica limites e inverte direção
-        if self.rect.x < self.limite_esquerdo:
-            self.rect.x = self.limite_esquerdo
-            self.direcao = 1
-            self.estado = "andar_direita"
-        elif self.rect.x + self.rect.width > self.limite_direito:
-            self.rect.x = self.limite_direito - self.rect.width
-            self.direcao = -1
-            self.estado = "andar_esquerda"
+        if self.direcao == 1:  # Direita
+            hitbox_x = self.rect.right - 20  # Sair do corpo do inimigo
+        else:  # Esquerda
+            hitbox_x = self.rect.left - hitbox_width + 20  # Sair do corpo do inimigo
 
-        # 2. Atualiza Animação
+        return pygame.Rect(hitbox_x, hitbox_y, hitbox_width, hitbox_height)
+
+    # 🟢 UPDATE RECEBE POSIÇÃO DO VOLT E O ESTADO DE JOGO (para aplicar dano)
+    def update(self, dt, volt_rect, volt_invencivel):
+
         self.tempo_animacao += dt
 
-        # Define qual lista de sprites usar
-        if self.direcao == 1:
-            self.sprites_atuais = self.animacao_andar_direita
-        elif self.direcao == -1:
-            self.sprites_atuais = self.animacao_andar_esquerda
-        else:
-            self.sprites_atuais = self.animacao_parado
+        distancia_x = abs(self.rect.centerx - volt_rect.centerx)
 
-        # Troca o frame se o tempo passou
+        # 1. MUDANÇA DE ESTADO: PATRULHA -> ATAQUE
+        if self.estado == "patrulha" and distancia_x <= self.ALCANCE_ATAQUE and not self.atacando:
+            self.estado = "atacando"
+            self.atacando = True
+            self.frame_atual = 0
+            self.tempo_animacao = 0.0
+
+            # Trava a direção do soco para o jogador
+            if volt_rect.centerx > self.rect.centerx:
+                self.direcao = 1
+            else:
+                self.direcao = -1
+
+        # 2. LÓGICA DE PATRULHA (Só se não estiver atacando)
+        if self.estado == "patrulha":
+            movimento_x = self.velocidade_movimento * self.direcao * dt
+            self.rect.x += movimento_x
+
+            # Verifica limites e inverte direção
+            if self.rect.x < self.limite_esquerdo:
+                self.rect.x = self.limite_esquerdo
+                self.direcao = 1
+            elif self.rect.x + self.rect.width > self.limite_direito:
+                self.rect.x = self.limite_direito - self.rect.width
+                self.direcao = -1
+
+        # 3. ATUALIZA ANIMAÇÃO E ESTADO DO ATAQUE
+        if self.estado == "atacando":
+
+            # Animação
+            if self.direcao == 1:
+                self.sprites_atuais = self.animacao_soco_direita
+            else:
+                self.sprites_atuais = self.animacao_soco_esquerda
+
+            # Se a animação terminou, volta à patrulha
+            if self.frame_atual >= self.FRAMES_ATAQUE - 1 and self.tempo_animacao >= self.VELOCIDADE_ANIMACAO:
+                self.estado = "patrulha"
+                self.atacando = False
+                self.frame_atual = 0
+                self.tempo_animacao = 0.0
+
+            # 🟢 LÓGICA DE DANO: Colisão com o jogador
+            hitbox = self.gerar_hitbox_soco()
+            if hitbox and volt_rect.colliderect(hitbox) and not volt_invencivel:
+                # Retorna o dano para ser processado no main.py
+                return {"tipo": "dano", "dano": self.DANO_Soco, "direcao": self.direcao}
+
+        elif self.estado == "patrulha":
+            # Animação de andar/parado
+            if self.direcao == 1:
+                self.sprites_atuais = self.animacao_andar_direita
+            else:
+                self.sprites_atuais = self.animacao_andar_esquerda
+
+        # 4. Troca de Frame Comum
         if self.tempo_animacao >= self.VELOCIDADE_ANIMACAO:
             self.frame_atual = (self.frame_atual + 1) % len(self.sprites_atuais)
             self.tempo_animacao = 0.0
 
-        # Atualiza a imagem exibida
         self.image = self.sprites_atuais[self.frame_atual]
+        return None  # Retorna None se não houver dano
 
     def draw(self, screen, offset_x, offset_y):
-        # Desenha a imagem na tela, ajustada pelo offset da câmera
         screen_x = self.rect.x - offset_x
         screen_y = self.rect.y - offset_y
 
-        # Desenha a imagem (o Surface do Pygame)
         screen.blit(self.image, (screen_x, screen_y))
+
+        # 💡 DEBUG: Desenha a hitbox ativa
+        hitbox = self.gerar_hitbox_soco()
+        if hitbox:
+            hitbox_screen = hitbox.move(-offset_x, -offset_y)
+            pygame.draw.rect(screen, (255, 0, 0), hitbox_screen, 2)
